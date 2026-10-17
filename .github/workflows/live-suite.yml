@@ -31,12 +31,6 @@ jobs:
     name: live-suite (testnet)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Least privilege: the live job only reads the repo. Issue #143's notify
-    # steps open/comment/close ONE tracked issue on failure/recovery, so the
-    # write scope is granted on this job alone, not workflow-wide.
-    permissions:
-      contents: read
-      issues: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -79,6 +73,9 @@ jobs:
       # Slack/Telegram path (b) stays declined unless a maintainer opts in.
       - name: notify — open or update the tracking issue
         if: failure()
+        # Issue #143: this step (and only this step) opens/comments on ONE
+        # tracked issue on failure. Scoped to the job-level write below rather
+        # than workflow-wide so the rest of the workflow stays read-only.
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -87,7 +84,16 @@ jobs:
 
       - name: notify — close the tracking issue on recovery
         if: success()
+        # Issue #143: recovery path closes the tracking issue. Same job-level
+        # `issues: write` scope as the failure step above; nothing else writes.
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/live-suite-notify/success.sh
+
+    # Job-level write scope: only the notify steps need `issues: write`; the
+    # checkout/install/test steps above run with the workflow-level
+    # `contents: read` only.
+    permissions:
+      contents: read
+      issues: write

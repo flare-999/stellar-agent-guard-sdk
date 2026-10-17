@@ -3,8 +3,6 @@
 # weekly cadence, PRs capped so the security-sensitive review queue stays
 # triageable. Every PR must still pass the full `ci` gate (branch protection
 # on `main` enforces this) — see CONTRIBUTING.md.
-# Actions are SHA-pinned with trailing `# vX.Y.Z` comments (issue #106);
-# Dependabot rewrites the SHA and the comment together on bump PRs.
 version: 2
 updates:
   - package-ecosystem: "npm"
@@ -52,9 +50,9 @@ updates:
     labels:
       - "dependencies"
     groups:
-      # Workflows pin by SHA with trailing `# vX.Y.Z` comments (issue #106).
-      # Dependabot updates the SHA and the trailing version comment together,
-      # so the pin stays current without losing the human-readable version.
+      # Workflows now pin actions by SHA with a trailing `# vX.Y.Z` comment
+      # (supply-chain sweep, issue #106). Dependabot updates the SHA and the
+      # trailing version comment together, keeping the pins current.
       actions-minor-patch:
         patterns:
           - "*"

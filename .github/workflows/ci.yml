@@ -55,9 +55,6 @@ on:
 permissions:
   contents: read
 
-# Pin actions to commit SHAs (with a `# vX.Y.Z` comment) so a retagged or
-# compromised action release cannot silently change what runs here. Bump via
-# dependabot (`.github/dependabot.yml`, `github-actions` ecosystem).
 jobs:
   ci:
     name: ci
@@ -178,13 +175,11 @@ jobs:
       # Informational only, never gating: shared runners are too noisy for a
       # wall-time threshold to mean anything. The committed baseline lives in
       # docs/benchmarks.md; compare changes on a developer machine, not here.
+      # Informational only, never gating: shared runners are too noisy for a
+      # wall-time threshold to mean anything. The committed baseline lives in
+      # docs/benchmarks.md; compare changes on a developer machine, not here.
       # `continue-on-error` keeps a noisy run from reddening the workflow for a
       # number that is never a gate.
       - name: decode-path benchmarks (informational)
         run: npm run bench
         continue-on-error: true
-
-# Job-level permissions are intentionally omitted: both jobs only read the
-# repo, so the workflow-level `contents: read` above is the least privilege
-# they need. A future job that writes (e.g. a release) must declare its own
-# job-level `permissions:` block rather than widening this workflow's default.
