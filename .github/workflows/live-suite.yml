@@ -25,9 +25,6 @@ on:
 
 permissions:
   contents: read
-  # Issue #143: the notify steps below open/comment/close ONE tracked issue on
-  # failure/recovery. Nothing else in this workflow writes.
-  issues: write
 
 jobs:
   live:
@@ -35,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591668 # v5.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -76,6 +73,9 @@ jobs:
       # Slack/Telegram path (b) stays declined unless a maintainer opts in.
       - name: notify — open or update the tracking issue
         if: failure()
+        permissions:
+          contents: read
+          issues: write
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -84,6 +84,9 @@ jobs:
 
       - name: notify — close the tracking issue on recovery
         if: success()
+        permissions:
+          contents: read
+          issues: write
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

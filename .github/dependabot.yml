@@ -50,7 +50,7 @@ updates:
     labels:
       - "dependencies"
     groups:
-      # Workflows pin actions by full commit SHA with a trailing `# vX.Y.Z`
+      # Workflows pin actions to full commit SHAs with a trailing `# vX.Y.Z`
       # comment (see the least-privilege permissions sweep). Dependabot
       # updates the SHA and the trailing version comment together.
       actions-minor-patch:
