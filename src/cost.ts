@@ -260,10 +260,16 @@ interface CostResultBreakdown {
 /**
  * Constructor options for {@link CostPreChecker}.
  *
- * Every field is optional except `interceptor`. Omitted ceilings mean "price
- * it, never object to the price" — a missing ceiling is never treated as a
- * zero ceiling. Omitted `logger` means the pre-checker is silent; the cost
- * decision is still returned either way.
+ * Every field is optional except `interceptor`. Defaults are applied by the
+ * pre-checker, not by the caller: omitting `maxFeeStroops` means "price it,
+ * never object to the price" (no ceiling), and omitting `logger` means the
+ * pre-checker emits no logs at all.
+ *
+ * ⚠ Safety-relevant: `maxFeeStroops` is the only option that can turn a priced
+ * call into an `over_budget` refusal. Omitting it disables the fee ceiling —
+ * calls are still priced and still subject to the interceptor's policy verdict,
+ * but cost alone will never block them. `policySource`/`policy` only add
+ * advisory `policyContext`; they do not change the allow/deny decision.
  */
 export interface CostPreCheckConfig {
   /**
@@ -277,10 +283,6 @@ export interface CostPreCheckConfig {
   /**
    * Refuse (as `over_budget`) when the estimated *total* fee exceeds this many
    * stroops. Omitted means "price it, never object to the price".
-   *
-   * Default: `undefined` (no ceiling; nothing is ever refused on price).
-   * ⚠ Safety: setting a ceiling only ever *adds* a refusal; omitting one does
-   * not weaken the guard's own policy check, which still runs.
    */
   maxFeeStroops?: bigint | undefined;
   /**
@@ -290,24 +292,16 @@ export interface CostPreCheckConfig {
    * Omitted — the default — the pre-checker says nothing at all. The cost
    * decision is still returned either way; the logger only decides who hears
    * about it.
-   *
-   * Default: `undefined` (silent). ⚠ Safety: logging is observational only and
-   * never changes a verdict.
    */
   logger?: GuardLoggerInput | undefined;
   /**
    * Opt-in policy source (contract address string or PolicyConfig/GuardPolicy).
    * When provided, `policyContext` is populated with policy-relative context.
    * When omitted or null, `policyContext` is `null`.
-   *
-   * Default: `undefined` (`policyContext` is `null`). ⚠ Safety: omitting this
-   * does not disable the guard — it only omits the additive policy context.
    */
   policySource?: string | PolicyConfig | null | undefined;
   /**
    * Optional policy or contract address. Alias for `policySource`.
-   *
-   * Default: `undefined`. Resolved after `policySource` when both are set.
    */
   policy?: string | PolicyConfig | null | undefined;
 }
@@ -374,8 +368,13 @@ export type CostPreCheckResult = CostDecision;
  * Per-call options for cost checking, including fee ceilings and opt-in policy context.
  *
  * These override the corresponding {@link CostPreCheckConfig} values for a
- * single call. Every field is optional; omitted fields fall back to the
- * pre-checker's constructor config (or to "no ceiling" / "no policy context").
+ * single call. Precedence is per-call option → constructor config → default.
+ *
+ * ⚠ Safety-relevant: `signal` and `timeoutMs` are fail-closed. An already-aborted
+ * signal returns before any RPC call; a mid-flight abort or fired timeout yields
+ * an `undetermined` verdict (and therefore an `undetermined` cost decision),
+ * never an admissible one. Setting `timeoutMs` to `0` disables the timeout
+ * entirely — the underlying RPC call is then unbounded.
  */
 export interface CostPreCheckOptions {
   /** Opt-in policy source (contract address or PolicyConfig/GuardPolicy). */
@@ -389,17 +388,11 @@ export interface CostPreCheckOptions {
    * already-aborted signal returns before any RPC call; a mid-flight abort or a
    * fired timeout yields a fail-closed `undetermined` verdict (and therefore an
    * `undetermined` cost decision) carrying the typed `RpcTimeoutError`.
-   *
-   * Default: `undefined` (no cancellation). ⚠ Safety: an abort is fail-closed —
-   * it never yields an admissible verdict.
    */
   signal?: AbortSignal | undefined;
   /**
    * Bound on the underlying RPC call, in milliseconds; `0` disables it. A fired
    * timeout is reported exactly like an abort — never as an admissible verdict.
-   *
-   * Default: `undefined` (no timeout). ⚠ Safety: `0` disables the bound; a
-   * fired timeout is fail-closed, never treated as admissible.
    */
   timeoutMs?: number | undefined;
 }
@@ -572,6 +565,16 @@ function computePolicyContext(
  * Nothing is broadcast, so calling this repeatedly costs only RPC time.
  *
  * When an opt-in policy source is configured, returns additive `policyContext`.
+ *
+ * ## Constructor options
+ *
+ * | Option | Type | Default | Semantics |
+ * | --- | --- | --- | --- |
+ * | `interceptor` | `Pick<PreFlightInterceptor, "check">` | required | Source of the enforced simulation that produces the price. |
+ * | `maxFeeStroops` | `bigint \| undefined` | `undefined` (no ceiling) | ⚠ Refuse as `over_budget` when estimated total fee exceeds this. Omitting disables the fee ceiling. |
+ * | `logger` | `GuardLoggerInput \| undefined` | `undefined` (silent) | Log sink for priced verdicts and ceiling breaches. Does not affect the returned decision. |
+ * | `policySource` | `string \| PolicyConfig \| null \| undefined` | `undefined` | Opt-in policy source; populates `policyContext`. Advisory only. |
+ * | `policy` | `string \| PolicyConfig \| null \| undefined` | `undefined` | Alias for `policySource`. |
  */
 export class CostPreChecker {
   private readonly config: CostPreCheckConfig;
@@ -607,6 +610,16 @@ export class CostPreChecker {
    *
    * Additive: `check()`, `precheckCost()` and `PreFlightInterceptor.check()` are
    * unchanged.
+   *
+   * ## Per-call options
+   *
+   * | Option | Type | Default | Semantics |
+   * | --- | --- | --- | --- |
+   * | `policySource` | `string \| PolicyConfig \| null \| undefined` | constructor `policySource` | Opt-in policy source; populates `policyContext`. Advisory only. |
+   * | `policy` | `string \| PolicyConfig \| null \| undefined` | constructor `policy` | Alias for `policySource`. |
+   * | `maxFeeStroops` | `bigint \| undefined` | constructor `maxFeeStroops` | ⚠ Per-call fee ceiling override. Omitting falls back to the constructor value (or no ceiling). |
+   * | `signal` | `AbortSignal \| undefined` | `undefined` | ⚠ Caller-owned cancellation. Already-aborted returns before RPC; mid-flight abort yields fail-closed `undetermined`. |
+   * | `timeoutMs` | `number \| undefined` | `undefined` | ⚠ RPC timeout in ms; `0` disables it. A fired timeout yields fail-closed `undetermined`, never admissible. |
    */
   async checkWithCost(
     call: ContractCall,

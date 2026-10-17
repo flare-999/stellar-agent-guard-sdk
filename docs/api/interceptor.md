@@ -1,6 +1,6 @@
 # PreFlightInterceptor API
 
-PreFlightInterceptor evaluates whether a planned contract call will be accepted by the guard contract.
+`PreFlightInterceptor` evaluates whether a planned contract call will be accepted by the guard contract.
 
 ## Constructor
 
@@ -8,41 +8,40 @@ PreFlightInterceptor evaluates whether a planned contract call will be accepted 
 constructor(options: PreFlightInterceptorOptions)
 ```
 
-## Options
+### Options
 
 | Option | Type | Default | Semantics |
 | --- | --- | --- | --- |
-| `server` | `rp.Server` i| required | Soroban RPC server instance used for simulation. |
-| `networkPassphrase` | `string` | required | Stellar network passphrase. |
-| `guard` | `string` | required | Custom account contract address (`C...`). |
-| `agent` | `Keypair` | required | Keypair registered as the agent in the guard. |
-| `source` | `Keypair` | required | Keypair paying for transaction fees. |
-| `cache` | `PreFlightCacheOptions` | disabled (undefined) | Optional short-lived verdict cache. ⚠ Enabling the cache means a returned verdict may be staler than the current chain state - see "Optional cache" below. |
+| `server` | `rpc.Server` | — (required) | Soroban RPC server instance used to simulate the guard check. |
+| `networkPassphrase` | `string` | — (required) | Stellar network passphrase the simulation is built against. |
+| `guard` | `string` | — (required) | Custom account contract address (`C...`) that enforces policy. |
+| `agent` | `Keypair` | — (required) | Keypair registered as the agent in the guard. |
+| `source` | `Keypair` | — (required) | Keypair paying for transaction fees. |
+| `cache` | `PreFlightCacheOptions` | `undefined` (cache disabled) | Optional short-lived verdict cache. ⚠ Enabling the cache means a verdict may be stale relative to current ledger/policy state; see [Optional cache](#optional-cache). |
 
-All options are read once at construction time.
+### `PreFlightCacheOptions`
 
-## Optional cache
+| Option | Type | Default | Semantics |
+| --- | --- | --- | --- |
+| `ttlMs` | `number` | `undefined` | Time-to-live in milliseconds. Set this or `ttlLedgers` to opt in; effective TTL is capped at one approximate five-second ledger-close interval. |
+| `ttlLedgers` | `number` | `undefined` | Time-to-live in ledgers. Set this or `ttlMs` to opt in; a cached entry is discarded when the observed ledger advances. |
+| `policyRevision` | `string \| (() => string \| Promise<string>)` | `undefined` | Policy revision marker; changing it invalidates the matching entry. May be a value or an async getter. |
+
+⚠ Safety note: a cached verdict can be staler than one admitted transfer. Callers must accept that tradeoff explicitly and call `invalidate(call?)` after policy or account-state changes.
+
+### Optional cache
 
 Set either `cache.ttlMs` or `cache.ttlLedgers` to opt in. The effective TTL is
 capped at one approximate five-second ledger-close interval, and a cached entry
 is discarded when the observed ledger advances. `policyRevision` may be a value
 or an async getter; changing it invalidates the matching entry. Call
-invalidate(call?) after policy or account-state changes. A view of the cache
-options:
-
-| Option | Type | Default | Semantics |
-| --- | --- | --- | --- |
-| `ttlMs` | `number` | undefined | TTL in milliseconds; capped at one ledger-close interval. |
-| `ttlLedgers` | `number` | undefined | TTL in ledgers; capped at one ledger-close interval. |
-| `policyRevision` | `string | number | (() => string | number) | async () => string | number | undefined | Changing this value invalidates the matching cache entry. |
-
-⚠ A cached verdict can be staler than one admitted transfer, so callers must
-accept that tradeoff explicitly. Omitting `cache` entirely is the fail-safe
-default: every check runs a fresh simulation.
+`invalidate(call?)` after policy or account-state changes. A cached verdict can
+be staler than one admitted transfer, so callers must accept that tradeoff
+explicitly.
 
 ## Methods
 
-### `check(call: ContractCall): Promise<PreFlightDecision>
+### `check(call: ContractCall): Promise<PreFlightDecision>`
 
 Evaluates a contract call against the guard without throwing or broadcasting.
 
@@ -50,9 +49,9 @@ Evaluates a contract call against the guard without throwing or broadcasting.
 
 Clears all cached decisions, or only the entries for the supplied call.
 
-### `assertAllowed(call: ContractCall): Promise<AdmissibleDecision>
+### `assertAllowed(call: ContractCall): Promise<AdmissibleDecision>`
 
-Simulates a call and throws `GuardBlockedError` if blocked or undetermined.
+Evaluates a call and throws `GuardBlockedError` if blocked or undetermined.
 
 ## CheckResult decoding and fallback behavior
 
@@ -60,8 +59,8 @@ The interceptor reads the guard contract's `CheckResult` value from the
 simulation response. The contract returns an enum with the following shapes:
 
 - `Allowed` — a unit variant with no payload.
-- `Blocked(reason)` — a variant carrying a symbol reason (e.g. `recipient_not_allowed,
-```per_tx_cap_exceeded`, `paused`).
+- `Blocked(reason)` — a variant carrying a symbol reason (e.g. `recipient_not_allowed`,
+  `per_tx_cap_exceeded`, `paused`).
 
 `decodeCheckResult` accepts either the raw `xdr.ScVal` the contract returns
 (for example `simulation.returnValue`) or the native value `scValToNative`
@@ -69,9 +68,9 @@ produces from it, and validates a `Blocked` reason against the contract's own
 reason vocabulary.
 
 Decoding is fail-closed. If the returned ScVal is not a recognized
-CheckResult shape — an unknown enum tag, a Blocked reason the contract does not
-define, an empty or over-long ScVec, a blocked variant whose reason is not a
-symbol, or a non-ScVec input — the decoder does not throw. Instead it
+`CheckResult` shape — an unknown enum tag, a `Blocked` reason the contract does
+not define, an empty or over-long `ScVec`, a blocked variant whose reason is not
+a symbol, or a non-`ScVec` input — the decoder does not throw. Instead it
 returns the typed fallback for the call-site contract:
 
 | Call site | Fallback verdict | Notes |
@@ -79,6 +78,6 @@ returns the typed fallback for the call-site contract:
 | `PreFlightInterceptor.check` | `undetermined` with `null` reason | The caller sees a typed decision, not an exception. |
 | `assertAllowed` | `GuardBlockedError` with an `undetermined` verdict | The error is thrown by the caller-facing assertion, not by the decoder. |
 
-In other words, a malformed or future CheckResult never escapes to the agent
+In other words, a malformed or future `CheckResult` never escapes to the agent
 loop as a raw throw. The interceptor treats any decode failure as
-undetermined, which is the fail-closed result.
+`undetermined`, which is the fail-closed result.

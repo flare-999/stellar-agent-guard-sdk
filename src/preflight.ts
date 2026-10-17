@@ -217,14 +217,11 @@ export type PreFlightDecision =
  * Both fields exist so a caller can run the batch check against values it
  * already knows, without an extra ledger read. Omit them and the interceptor
  * fetches the live policy and committed window spend from the guard's storage.
- */
-/**
- * Options for `checkBatch()`.
  *
  * | Option | Type | Default | Semantics |
  * | --- | --- | --- | --- |
- * | `policy` | `ReadonlyPolicyConfig \| null` | `undefined` (fetched from ledger) | Policy configuration to enforce against during batch staging. |
- * | `initialWindowSpent` | `bigint` | `0n` (or fetched from `Window` entry) | Committed amount already spent in the current rolling window. |
+ * | `policy` | `ReadonlyPolicyConfig \| null` | fetched from guard storage | Policy enforced during batch staging. |
+ * | `initialWindowSpent` | `bigint` | `0n` (or fetched from `Window` entry) | Committed spend already counted against the rolling window. |
  */
 export interface CheckBatchOptions {
   /**
@@ -288,18 +285,12 @@ export type PolicyRevision = string | number | bigint | boolean | null | undefin
  * `undetermined` means, so a bound can never produce an `admissible` verdict.
  * Both default to the pipeline's shared behaviour: no signal, and
  * `DEFAULT_RPC_TIMEOUT_MS` for the timeout.
- */
-/**
- * Per-call options for `check()`.
  *
  * | Option | Type | Default | Semantics |
  * | --- | --- | --- | --- |
- * | `onStep` | `(step: InvokeStepEvent) => void` | `undefined` | Receives enforcement pipeline stage attempts; no effect on the verdict. |
- * | `signal` | `AbortSignal \| undefined` | `undefined` (no signal) | Caller-owned cancellation; a fired signal yields `undetermined`, never a throw. |
- * | `timeoutMs` | `number \| undefined` | `DEFAULT_RPC_TIMEOUT_MS` (`0` disables) | Bound on each RPC call; a fired timeout yields `undetermined`. |
- *
- * ⚠ A bound can never produce an `admissible` verdict: an abort or timeout
- * surfaces as the fail-closed `undetermined` arm.
+ * | `onStep` | `(step: InvokeStepEvent) => void` | none | Observability hook; does not affect the verdict. |
+ * | `signal` | `AbortSignal` | none | Cancels RPC calls; a fired signal yields `undetermined`, never a throw. |
+ * | `timeoutMs` | `number` | `DEFAULT_RPC_TIMEOUT_MS` | Per-RPC-call bound in ms; `0` disables. A fired timeout yields `undetermined`. |
  */
 export interface PreFlightCheckOptions {
   onStep?: (step: InvokeStepEvent) => void;
@@ -315,24 +306,21 @@ export interface PreFlightCheckOptions {
   timeoutMs?: number | undefined;
 }
 
-/**
- * Opt-in short-lived verdict cache.
- *
- * | Option | Type | Default | Semantics |
- * | --- | --- | --- | --- |
- * | `ttlMs` | `number` | `undefined` (required unless `ttlLedgers`) | Max cache age in ms, capped at one ledger close (5s). |
- * | `ttlLedgers` | `number` | `undefined` (required unless `ttlMs`) | Ledger-based spelling of `ttlMs`; one ledger ≈ 5s. |
- * | `policyRevision` | `PolicyRevision \| (() => PolicyRevision \| Promise<PolicyRevision>)` | `undefined` | Policy revision token; a change invalidates the entry even before TTL. |
- *
- * ⚠ Cache enabled ⇒ a verdict may be stale (up to one ledger close). A cached
- * `admissible` can outlive a policy change unless `policyRevision` is supplied.
- * `undetermined` verdicts are never cached.
- */
 export interface PreFlightCacheOptions {
   /**
    * Maximum cache age in milliseconds. The effective value is capped at one
    * approximate ledger-close interval (5 seconds), so a cache hit can never
    * cross a ledger boundary.
+   *
+   * ⚠ Safety: enabling the cache means a verdict may be stale — a cached
+   * `admissible` can outlive the state it was computed against (bounded by the
+   * 5s cap). Omit `cache` entirely to preserve uncached behavior.
+   *
+   * | Option | Type | Default | Semantics |
+   * | --- | --- | --- | --- |
+   * | `ttlMs` | `number` | required unless `ttlLedgers` set | Cache age in ms, capped at 5000. |
+   * | `ttlLedgers` | `number` | required unless `ttlMs` set | Ledger-based spelling of `ttlMs` (1 ledger ≈ 5s). |
+   * | `policyRevision` | `PolicyRevision \| (() => PolicyRevision \| Promise<PolicyRevision>)` | none | Policy revision token; a change invalidates entries even before TTL. |
    */
   ttlMs?: number;
   /** Ledger-based spelling of `ttlMs`; one ledger is approximately 5 seconds. */
@@ -344,28 +332,28 @@ export interface PreFlightCacheOptions {
   policyRevision?: PolicyRevision | (() => PolicyRevision | Promise<PolicyRevision>);
 }
 
-/**
- * Constructor options for `PreFlightInterceptor` (alias
- * `PreFlightInterceptorOptions`).
- *
- * | Option | Type | Default | Semantics |
- * | --- | --- | --- | --- |
- * | `server` | `rpc.Server` | required | Soroban RPC server used for all reads and simulations. |
- * | `networkPassphrase` | `string` | required | Network passphrase for signing and simulation. |
- * | `guard` | `ContractAddress` | required | The guarded smart account whose policy is enforced. |
- * | `agent` | `AgentSigner \| Keypair` | required | Key registered as the account's agent; signs the auth entry. |
- * | `source` | `Keypair` | required | Classic account paying fees and supplying the sequence number. |
- * | `accountSigners` | `Keypair[]` | `[]` | Authorizers for non-guard requirements (e.g. an admin on a policy call). |
- * | `policy` | `ReadonlyPolicyConfig \| null` | `undefined` (fetched from ledger) | Optional policy used for batch staging. |
- * | `cache` | `PreFlightCacheOptions` | `undefined` (uncached) | Opt-in short-lived verdict cache. ⚠ A cached verdict can be staler than one admitted transfer. |
- * | `logger` | `GuardLoggerInput \| undefined` | `undefined` (silent) | Log sink for verdicts and cache events; changes only observability, never the verdict. |
- * | `clock` | `Clock` | `systemClock` | Injectable clock for cache TTL; use a FakeClock in tests. |
- */
 export interface PreFlightConfig {
   server: rpc.Server;
   networkPassphrase: string;
   /** The guarded smart account whose policy is being enforced. */
   guard: ContractAddress;
+  /**
+   * Constructor options for `PreFlightInterceptor` (aliased as
+   * `PreFlightInterceptorOptions`).
+   *
+   * | Option | Type | Default | Semantics |
+   * | --- | --- | --- | --- |
+   * | `server` | `rpc.Server` | required | Soroban RPC client used for ledger reads and simulations. |
+   * | `networkPassphrase` | `string` | required | Network passphrase for the enforced simulation. |
+   * | `guard` | `ContractAddress` | required | The guarded smart account whose policy is enforced. |
+   * | `agent` | `AgentSigner \| Keypair` | required | Key registered as the account's agent; signs the auth entry. |
+   * | `source` | `Keypair` | required | Classic account paying fees and supplying the sequence number. |
+   * | `accountSigners` | `Keypair[]` | `[]` | Authorizers for non-guard requirements (e.g. an admin on a policy call). |
+   * | `policy` | `ReadonlyPolicyConfig \| null` | fetched from ledger | Policy used for batch staging. |
+   * | `cache` | `PreFlightCacheOptions` | none (uncached) | ⚠ Opt-in short-lived cache; a cached verdict may be staler than one admitted transfer. |
+   * | `logger` | `GuardLoggerInput` | none (silent) | Log sink for verdicts and cache events; changes only whether anyone is told. |
+   * | `clock` | `Clock` | `systemClock` | Injectable clock for cache TTL; use a FakeClock in tests. |
+   */
   /**
    * The key registered as the account's agent, used to sign the auth entry: an
    * `AgentSigner` for any signing setup, or a plain Ed25519 `Keypair` for the
@@ -400,7 +388,6 @@ export interface PreFlightConfig {
 }
 
 /** Alias used by the README's constructor terminology. */
-/** Alias of `PreFlightConfig`; the README's constructor terminology. */
 export type PreFlightInterceptorOptions = PreFlightConfig;
 
 const LEDGER_CLOSE_MS = 5_000;
