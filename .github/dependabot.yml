@@ -53,6 +53,9 @@ updates:
       # Workflows now pin actions by SHA with a trailing `# vX.Y.Z` comment
       # (supply-chain sweep, issue #106). Dependabot updates the SHA and the
       # trailing version comment together, keeping the pins current.
+      # Workflows pin by tag today (e.g. actions/checkout@v7). If #106 /
+      # SHA-pinning moves them to `uses: owner/action@<sha> # vX.Y.Z`,
+      # Dependabot updates the SHA and the trailing version comment together.
       actions-minor-patch:
         patterns:
           - "*"

@@ -25,6 +25,9 @@ on:
 
 permissions:
   contents: read
+  # Issue #143: the notify steps below open/comment/close ONE tracked issue on
+  # failure/recovery. Nothing else in this workflow writes.
+  issues: write
 
 jobs:
   live:
