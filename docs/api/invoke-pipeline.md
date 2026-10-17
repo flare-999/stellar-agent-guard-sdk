@@ -1,9 +1,8 @@
 # Invoke Pipeline API
 
-## ``invoke(params: InvokeParams): Promise<InvokeOutcome>`
+## `invoke(params: InvokeParams): Promise<InvokeOutcome>`
 
 Executes an end-to-end transaction through the guard:
-
 1. Runs probe simulation to collect required authorization entries.
 2. Signs authorization entries with the agent signer (`GuardAuthorization.agent`:
    an `AgentSigner`, or a plain Ed25519 `Keypair` for the single-key default).
@@ -38,26 +37,20 @@ const outcome = await invoke({
 * **How the fee multiplier works**: On each retry, the inclusion fee is scaled by `feeMultiplier` (e.g. 100 stroops → 200 stroops → 400 stroops) and re-added to the simulated resource fee.
 * **Guard and Simulation Invariant**: **Every fee-bump attempt is re-prepared, re-simulated, and re-evaluated by the guard policy.** A fee bump NEVER bypasses simulation or guard enforcement. If re-simulation causes a policy block, the policy block is immediately surfaced and the transaction is never broadcast.
 
-### `InvokeOptions` constructor / options table
+### `InvokeOptions` constructor options
 
-The following options are accepted by the invoke pipeline. Defaults are verified against the source (`src/invoke/types.ts`) and the compiled `.d.ts` declarations.
+```typescript
+interface InvokeOptions {
+  feeBump?: FeeBumpOptions;
+  maxRetries?: number;
+}
+```
+
+The `InvokeOptions` interface collects the optional configuration for the invoke pipeline. Every field is optional; defaults are applied by the pipeline.
 
 | Option | Type | Default | Semantics |
-| ------ | ---- | ------- | ---------- |
-| `server` | `SorobanRpcServer` | required | Soroban RPC client used for probe simulation, enforced simulation, and broadcast. |
-| `source` | `Keypair` | required | Source account keypair used to build the transaction envelope. |
-| `call` | `ContractCall` | required | Contract address, function name, and arguments to invoke. |
-| `networkPassphrase` | string | required | Stellar network passphrase (e.g. `Test Stellar Network`). |
-| `feeBump` | `FeeBumpOptions` | `{ maxAttempts: 3, feeMultiplier: 2, initialInclusionFee: 100n }` | Bounded fee-bump retry policy; see below. |
-| `maxRetries` | number | `3` | Overall retry budget for transient ledger resource errors and fee-bump attempts. |
-| `timeoutMs` | number | `30000` | Per-RPC-call timeout in milliseconds. |
+| ------ | ---- | ------- | --------- |
+| `feeBump` | `FeeBumpOptions` | enabled (`maxAttempts: 3`, `feeMultiplier: 2`, `initialInclusionFee: 100n`) | Bounded fee-bump retry configuration. Disabling it means a minimum-fee rejection surfaces as a `BroadcastError` instead of being retried. |
+| `maxRetries` | `number` | derived from `feeBump.maxAttempts` (default 3) | Overall cap on broadcast retries; when exhausted, a typed `BroadcastError` is returned. }
 
-`FeeBumpOptions`:
-
-| Field | Type | Default | Semantics |
-| ----- | ---- | ------- | ---------- |
-| `maxAttempts` | number | `3` | Maximum fee-bump attempts before returning `BroadcastError. |
-| `feeMultiplier` | number | `2` | Multiplier applied to the inclusion fee on each retry. |
-| `initialInclusionFee` | bigint | `100n` | Base inclusion fee in stroops for the first attempt. }
-
-> ✠️ **Safety note:** Fee-bump retries never bypass simulation or guard enforcement. Every attempt is re-prepared, re-simulated, and re-evaluated by the policy. Disabling fee-bump (`feeBump.maxAttempts = 0`) is safe from a policy perspective — it only removes the retry on minimum-fee rejections, causing the call to surface a `BroadcastError` instead.
+Note: the `InvokeOptions` interface is intentionally minimal; additional configuration (e.g. guard policy, telemetry) is passed through the guard instance and its constructor options. See the class options tables in the README API reference for `PreFlightInterceptorOptions`, `CostPreCheckerOptions`, and `GuardTelemetryListenerOptions`.

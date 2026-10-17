@@ -10,25 +10,27 @@ constructor(options: GuardTelemetryListenerOptions)
 
 ### Options
 
-Every field of `GuardTelemetryListenerOptions`, with its type, default (verified against source), and one-line semantics. Safety-relevant options are flagged with ⚠.
+Every option on `GuardTelemetryListenerOptions`, with its type, default, and one-line semantics. Defaults are cross-checked against the source.
 
 | Option | Type | Default | Semantics |
 | --- | --- | --- | --- |
-| `server` | `rp.Server` | required | Soroban RPC server used for all reads. |
-| `guard` | string | required | Guard contract address; only events from this contract are decoded. |
-| `failedTx` | boolean | `false` | ⚠ Opt in to failed-transaction diagnostics as a third event stream; disabling means failed txs are never surfaced. |
-| `buffer` | `{ max: number }` | omitted (no buffer) | ⚠ Opt in to retaining the most recent `max` events for `recent()` snapshots (issue #68). Omitted → no buffer is allocated and `recent()` always returns `[]`. |
-| `counters` | `CounterOptions` | omitted (no counters) | ⚠ Opt in to sliding-window counters exposed via `stats()`. Omitted → `stats()` returns `null` and no counter structures are allocated. |
-| `cursorStore` | `CursorStore` | `InMemoryCursorStore` | ⚠ Persists the watch cursor across restarts. The default is in-memory: no resume across restarts, so a redeploy re-emits history or skips the gap. |
+| `server` | `rpc.Server` | required | Soroban RPC server used for all reads. |
+| `guard` | `string` | required | Guard contract address; only events from this contract are decoded. |
+| `failedTx` | `boolean` | `false` | Opt in to failed-transaction diagnostics as a third event stream. Disabled ⇒ failed tx diagnostics are not surfaced. |
+| `buffer` | `{ max: number }` | undefined | Opt in to retaining the most recent `max` events for `recent()` snapshots (issue #68). Omitted ⇒ no buffer is allocated and `recent()` always returns `[]`. |
+| `counters` | { `windowEvents??: number`; `windowMs?: number } | undefined | Opt in to sliding-window counters exposed via `stats()`. Omitted ⇒ `stats()` returns `null` and no counter structures are allocated. |
+| `cursorStore` | `CursorStore` | `InMemoryCursorStore` | Persists the watch cursor across restarts. Default is in-memory ⇒ no resume across restarts. |
+| `onStreamError` | `(error: Error) => void` | undefined | Called exactly once with the terminal error when `watch()` retries are exhausted. Omitted ⇒ the stream still ends cleanly; the error is retrievable via `lastError`. |
+| `maxRetries` | `number` | `5` | Maximum consecutive `watch()` retries before giving up and calling `onStreamError`. |
 
-See [Cursor persistence (`cursorStore`) below](#cursor-persistence-cursorstore) for the `CursorStore` contract and durable wiring.
+> ⚠ Safety-relevant options are flagged above. Disabling `failedTx` or `onStreamError` reduces observability of failures but does not change guard verdicts.
 
 ## Methods
 
 ### `recent(filter?): GuardEvent[]`
 
 The retained window of most-recent decoded events, oldest first, empty unless a
-`buffer` was configured. `filter` narrows by `stream`, `reason`, `fromLedger`, or
+`.buffer` was configured. `filter` narrows by `stream`, `reason`, `fromLedger`, or
 `toLedger`; a ledger-less diagnostic event is excluded from a ledger range rather
 than treated as inside it. Non-durable: the window lives in process memory and a
 restart empties it. Only events this listener decoded are retained — committed
@@ -36,21 +38,21 @@ events via `poll()`/`watch()`, diagnostic events via `watchAll()`, and failed
 transaction events via `pollFailedTransactions()` or `watch()` when `failedTx`
 is enabled.
 
-### `pollFailedTransactions(params?): Promise<FailedTxPollResult>`
+### `pollFailedTransactions(params?): Promise<FailedTxPollResult>
 
 Reads one page from the independent `getTransactions` cursor. Pass the returned
 cursor on the next call; omitting it starts at the current RPC head, without
 replaying older failures. Only failed transactions with diagnostics emitted by
 the configured guard are returned. RPC errors leave a supplied cursor unchanged.
 
-### `watch(params?): AsyncIterable<GuardEventPage>`
+### `watch(params?(FailedTxPollResult): AsyncIterable<GuardEventPage>
 
 Yields pages of decoded guard events (`event_auth_checked`, `event_policy_updated`, etc.).
 Set `failedTx: true` in the constructor options to include failed-transaction
 diagnostics; this scan maintains its own cursor and does not advance the
 committed event cursor.
 Parameters include `startLedger`, `cursor`/`resumeLedger`, `pollIntervalMs`, `limit`,
-`juitter`, `rng`, `sleep`, `onGap`, and `signal`.
+`jitter`, `rng`, `sleep`, `onGap`, and `signal`.
 
 #### Mid-watch failures (`onStreamError`)
 
@@ -92,7 +94,7 @@ Aborting ends the stream as a normal exit, never a throw:
 there is no supported way to cancel a request that has already been sent. The
 worst case between `signal.abort()` and the iterator ending is therefore **one
 request duration**, never a full poll interval. The READMG's
-[“Aborting a watch”](../../README.md#aborting-a-watch-what-cancellation-does-and-does-not-cover)
+["“Aborting a watch”"](../../README.md#aborting-a-watch-what-cancellation-does-and-does-not-cover)
 section states the same boundary for consumers.
 
 ### `stats(): CounterSnapshot | null`
@@ -126,10 +128,9 @@ Every decoded `GuardEvent` carries a stable, non-null `id` on both streams:
 
 The same event re-parsed yields the same id; two different blocks within one
 simulation yield different ids. Format and collision notes:
-[`docs/event-schema.md`](../event-schema.md#event-identity--guardeventid).
+[`docs/event-schema.md`(../event-schema.md#event-identity--guardeventid).
 
 ## Cursor persistence (`cursorStore`)
-
 A guard monitor that restarts — an agent runtime redeploy, a crash — re-reads
 from the default cursor unless its position survives the restart: it either
 **re-emits history** or **skips the gap**, silently. `cursorStore` fixes that by
@@ -144,10 +145,10 @@ interface CursorStore {
 }
 ```
 
-- `load()` consulted once, when `watch()` starts. A stored cursor wins over
+- `load()` is consulted once, when `watch()` starts. A stored cursor wins over
   the default head position — resume-after-restart is exactly the case where
   "the default" is wrong.
-- `save()` is called once per poll, **before** the page is yielded, so a
+- `save()` called once per poll, **before** the page is yielded, so a
   consumer that stops after a page (crash, abort, throw) resumes from that
   page's cursor.
 - An explicit `startLedger` passed to `watch()` pins the start and is not
@@ -157,7 +158,7 @@ interface CursorStore {
 
 ### Durable wiring
 
-The interface is two methods wide on purpose — wire it to anything tha
+The interface is two methods wide on purpose — wire it to anything that
 outlives the process. File:
 
 ```ts
@@ -185,14 +186,14 @@ const listener = new GuardTelemetryListener({
 ```
 
 Redis is the same shape (`GET`/`SET` on one key), as is a single-row database
-table. Whatever the backend, the cursor is one opaque string — store it
+table. Whatever the backend, the cursor is one opaque string — store is
 verbatim, do not parse it.
 
 ### Delivery contract: at-least-once
 
 `watch()` with a `cursorStore` delivers **at-least-once**, not exactly-once:
 
-/ Events committed between the last `save()` and a crash are re-fetched and
+- Events committed between the last `save()` and a crash are re-fetched and
   re-emitted on resume.
 - Because `save()` runs before the page is yielded, a consumer that dies after
   processing but before the next save can see that page again within one
