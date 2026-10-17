@@ -27,17 +27,20 @@
 import { createHash } from "node:crypto";
 import { Keypair, StrKey, rpc, xdr } from "@stellar/stellar-sdk";
 import { GuardError, SimulationError } from "./errors.ts";
-import { enforceCall } from "./invoke.ts";
+import { enforceCall, RpcTimeoutError, timeoutOutcome, withRpcAbort } from "./invoke.ts";
 import { resourceBreakdownFromSimulation, type ResourceBreakdown } from "./cost.ts";
 import {
   extractTransferAmount,
   fetchGuardPolicyAndWindow,
-  type PolicyConfig,
+  type ContractAddress,
+  type ReadonlyPolicyConfig,
 } from "./policy.ts";
 import { GuardBlockedError, explainReason } from "./reasons.ts";
-import type { InvokeStepEvent } from "./invoke.ts";
+import type { EnforcementOutcome, InvokeStepEvent } from "./invoke.ts";
+import { resolveLogger, type GuardLogger, type GuardLoggerInput } from "./logger.ts";
 import { parseSimulationResourceFee, toAgentSigner } from "./tx.ts";
 import type { AgentSigner, ContractCall } from "./tx.ts";
+import { systemClock, type Clock } from "./clock.ts";
 
 /**
  * Thrown synchronously when a ContractCall has invalid shape or types
@@ -215,12 +218,20 @@ export type PreFlightDecision =
  * already knows, without an extra ledger read. Omit them and the interceptor
  * fetches the live policy and committed window spend from the guard's storage.
  */
+/**
+ * Options for `checkBatch()`.
+ *
+ * | Option | Type | Default | Semantics |
+ * | --- | --- | --- | --- |
+ * | `policy` | `ReadonlyPolicyConfig \| null` | `undefined` (fetched from ledger) | Policy configuration to enforce against during batch staging. |
+ * | `initialWindowSpent` | `bigint` | `0n` (or fetched from `Window` entry) | Committed amount already spent in the current rolling window. |
+ */
 export interface CheckBatchOptions {
   /**
    * Policy configuration to enforce against during batch staging.
    * If omitted, the interceptor attempts to fetch it from the guard's ledger storage.
    */
-  policy?: PolicyConfig | null;
+  policy?: ReadonlyPolicyConfig | null;
 
   /**
    * Initial committed amount already spent in the current rolling window.
@@ -268,11 +279,55 @@ export type PolicyRevision = string | number | bigint | boolean | null | undefin
  * simulate; `check()` never broadcasts), using the same `InvokeStepEvent`
  * shape and shared trace vocabulary as `invoke()`'s `onStep`. Entirely
  * optional — omitting it changes nothing about the check.
+ *
+ * `signal` and `timeoutMs` bound the RPC calls the check makes (the ledger
+ * lookup and the probe/enforced simulations). An already-aborted signal
+ * returns before any RPC call is made; a mid-flight abort or a fired timeout
+ * returns the check's fail-closed `undetermined` verdict carrying a typed
+ * `RpcTimeoutError` — the guard reached no decision, which is exactly what
+ * `undetermined` means, so a bound can never produce an `admissible` verdict.
+ * Both default to the pipeline's shared behaviour: no signal, and
+ * `DEFAULT_RPC_TIMEOUT_MS` for the timeout.
+ */
+/**
+ * Per-call options for `check()`.
+ *
+ * | Option | Type | Default | Semantics |
+ * | --- | --- | --- | --- |
+ * | `onStep` | `(step: InvokeStepEvent) => void` | `undefined` | Receives enforcement pipeline stage attempts; no effect on the verdict. |
+ * | `signal` | `AbortSignal \| undefined` | `undefined` (no signal) | Caller-owned cancellation; a fired signal yields `undetermined`, never a throw. |
+ * | `timeoutMs` | `number \| undefined` | `DEFAULT_RPC_TIMEOUT_MS` (`0` disables) | Bound on each RPC call; a fired timeout yields `undetermined`. |
+ *
+ * ⚠ A bound can never produce an `admissible` verdict: an abort or timeout
+ * surfaces as the fail-closed `undetermined` arm.
  */
 export interface PreFlightCheckOptions {
   onStep?: (step: InvokeStepEvent) => void;
+  /**
+   * Caller-owned cancellation; aborts the RPC calls the check makes. A fired
+   * signal yields an `undetermined` verdict, never a throw.
+   */
+  signal?: AbortSignal | undefined;
+  /**
+   * Bound on each RPC call, in milliseconds; `0` disables the timeout. A fired
+   * timeout yields the same `undetermined` verdict as an abort.
+   */
+  timeoutMs?: number | undefined;
 }
 
+/**
+ * Opt-in short-lived verdict cache.
+ *
+ * | Option | Type | Default | Semantics |
+ * | --- | --- | --- | --- |
+ * | `ttlMs` | `number` | `undefined` (required unless `ttlLedgers`) | Max cache age in ms, capped at one ledger close (5s). |
+ * | `ttlLedgers` | `number` | `undefined` (required unless `ttlMs`) | Ledger-based spelling of `ttlMs`; one ledger ≈ 5s. |
+ * | `policyRevision` | `PolicyRevision \| (() => PolicyRevision \| Promise<PolicyRevision>)` | `undefined` | Policy revision token; a change invalidates the entry even before TTL. |
+ *
+ * ⚠ Cache enabled ⇒ a verdict may be stale (up to one ledger close). A cached
+ * `admissible` can outlive a policy change unless `policyRevision` is supplied.
+ * `undetermined` verdicts are never cached.
+ */
 export interface PreFlightCacheOptions {
   /**
    * Maximum cache age in milliseconds. The effective value is capped at one
@@ -289,11 +344,28 @@ export interface PreFlightCacheOptions {
   policyRevision?: PolicyRevision | (() => PolicyRevision | Promise<PolicyRevision>);
 }
 
+/**
+ * Constructor options for `PreFlightInterceptor` (alias
+ * `PreFlightInterceptorOptions`).
+ *
+ * | Option | Type | Default | Semantics |
+ * | --- | --- | --- | --- |
+ * | `server` | `rpc.Server` | required | Soroban RPC server used for all reads and simulations. |
+ * | `networkPassphrase` | `string` | required | Network passphrase for signing and simulation. |
+ * | `guard` | `ContractAddress` | required | The guarded smart account whose policy is enforced. |
+ * | `agent` | `AgentSigner \| Keypair` | required | Key registered as the account's agent; signs the auth entry. |
+ * | `source` | `Keypair` | required | Classic account paying fees and supplying the sequence number. |
+ * | `accountSigners` | `Keypair[]` | `[]` | Authorizers for non-guard requirements (e.g. an admin on a policy call). |
+ * | `policy` | `ReadonlyPolicyConfig \| null` | `undefined` (fetched from ledger) | Optional policy used for batch staging. |
+ * | `cache` | `PreFlightCacheOptions` | `undefined` (uncached) | Opt-in short-lived verdict cache. ⚠ A cached verdict can be staler than one admitted transfer. |
+ * | `logger` | `GuardLoggerInput \| undefined` | `undefined` (silent) | Log sink for verdicts and cache events; changes only observability, never the verdict. |
+ * | `clock` | `Clock` | `systemClock` | Injectable clock for cache TTL; use a FakeClock in tests. |
+ */
 export interface PreFlightConfig {
   server: rpc.Server;
   networkPassphrase: string;
   /** The guarded smart account whose policy is being enforced. */
-  guard: string;
+  guard: ContractAddress;
   /**
    * The key registered as the account's agent, used to sign the auth entry: an
    * `AgentSigner` for any signing setup, or a plain Ed25519 `Keypair` for the
@@ -305,15 +377,30 @@ export interface PreFlightConfig {
   /** Authorizers for non-guard requirements (e.g. an admin on a policy call). */
   accountSigners?: Keypair[];
   /** Optional policy to use for batch staging (otherwise fetched from ledger). */
-  policy?: PolicyConfig | null;
+  policy?: ReadonlyPolicyConfig | null;
   /**
    * Opt-in short-lived cache. Omit this property to preserve uncached behavior.
    * A cached verdict can be staler than one admitted transfer.
    */
   cache?: PreFlightCacheOptions;
+  /**
+   * Optional log sink for this interceptor's decision points: each verdict, and
+   * every cache hit, store and invalidation.
+   *
+   * Omitted — the default — the interceptor says nothing at all. A verdict is
+   * still returned exactly as before; the logger changes only whether anyone is
+   * told about it.
+   */
+  logger?: GuardLoggerInput | undefined;
+  /**
+   * Inject a custom clock for time-dependent operations (cache TTL, etc.).
+   * Defaults to the system clock; use a FakeClock in tests for deterministic timing.
+   */
+  clock?: Clock;
 }
 
 /** Alias used by the README's constructor terminology. */
+/** Alias of `PreFlightConfig`; the README's constructor terminology. */
 export type PreFlightInterceptorOptions = PreFlightConfig;
 
 const LEDGER_CLOSE_MS = 5_000;
@@ -370,12 +457,16 @@ export class PreFlightInterceptor {
   private readonly cacheOptions: PreFlightCacheOptions | undefined;
   private readonly cache = new Map<string, CacheEntry>();
   private readonly namespace: string;
+  private readonly logger: GuardLogger;
+  private readonly clock: Clock;
 
   constructor(config: PreFlightConfig) {
     this.config = config;
     this.cacheOptions = config.cache;
+    this.clock = config.clock ?? systemClock;
     this.validateCacheOptions();
     this.namespace = this.cacheOptions ? configFingerprint(config) : "";
+    this.logger = resolveLogger(config.logger);
   }
 
   private validateCacheOptions(): void {
@@ -424,7 +515,7 @@ export class PreFlightInterceptor {
       return null;
     }
 
-    const now = Date.now();
+    const now = this.clock.now();
     for (const [key, entry] of this.cache) {
       if (entry.ledger !== ledger || entry.expiresAt <= now) this.cache.delete(key);
     }
@@ -439,13 +530,20 @@ export class PreFlightInterceptor {
   /** Clear all cached verdicts, or only entries for `call` when provided. */
   invalidate(call?: ContractCall): void {
     if (!call) {
+      const cleared = this.cache.size;
       this.cache.clear();
+      this.logger.debug("pre-flight cache invalidated", { scope: "all", cleared });
       return;
     }
     const prefix = `${this.namespace}:${callFingerprint(call)}:`;
+    let cleared = 0;
     for (const key of this.cache.keys()) {
-      if (key.startsWith(prefix)) this.cache.delete(key);
+      if (key.startsWith(prefix)) {
+        this.cache.delete(key);
+        cleared += 1;
+      }
     }
+    this.logger.debug("pre-flight cache invalidated", { scope: "call", cleared });
   }
 
   /**
@@ -463,22 +561,52 @@ export class PreFlightInterceptor {
     if (context) {
       const cached = this.cache.get(context.key);
       if (cached) {
-        const now = Date.now();
+        const now = this.clock.now();
         if (cached.ledger === context.ledger && cached.expiresAt > now) {
+          // A hit is worth a line of its own: it is the one verdict the caller
+          // gets without a simulation, so a host reading logs needs to be able
+          // to tell a reused verdict from a fresh one.
+          this.logger.debug("pre-flight verdict served from cache", {
+            guard: this.config.guard,
+            contract: call.contract,
+            fn: call.fn,
+            kind: cached.decision.kind,
+            ledger: context.ledger,
+          });
           return cached.decision;
         }
         this.cache.delete(context.key);
       }
     }
-    const outcome = await enforceCall({
-      server: this.config.server,
-      source: this.config.source,
-      call,
-      networkPassphrase: this.config.networkPassphrase,
-      guardAuth: { guard: this.config.guard, agent: this.config.agent },
-      ...(this.config.accountSigners ? { accountSigners: this.config.accountSigners } : {}),
-      ...(options?.onStep ? { onStep: options.onStep } : {}),
-    });
+    // A bound that fired is a verdict, not a crash: the guard never reached a
+    // decision, so the check returns its fail-closed `undetermined` arm (the
+    // same arm any other unrunnable simulation takes) carrying the typed
+    // `RpcTimeoutError`. `invoke()` reports the same error through its own
+    // `error` outcome instead — a verdict question versus a pipeline question.
+    let outcome: EnforcementOutcome;
+    try {
+      outcome = await withRpcAbort(
+        {
+          stage: "pre-flight",
+          signal: options?.signal,
+          timeoutMs: options?.timeoutMs,
+        },
+        () =>
+          enforceCall({
+            server: this.config.server,
+            source: this.config.source,
+            call,
+            networkPassphrase: this.config.networkPassphrase,
+            guardAuth: { guard: this.config.guard, agent: this.config.agent },
+            ...(this.config.accountSigners ? { accountSigners: this.config.accountSigners } : {}),
+            ...(options?.onStep ? { onStep: options.onStep } : {}),
+            ...(this.config.logger ? { logger: this.config.logger } : {}),
+          }),
+      );
+    } catch (error) {
+      if (!(error instanceof RpcTimeoutError)) throw error;
+      outcome = timeoutOutcome(error);
+    }
 
     let decision: PreFlightDecision;
     if (outcome.kind === "error") {
@@ -544,6 +672,37 @@ export class PreFlightInterceptor {
         ledger: context.ledger,
         expiresAt: context.expiresAt,
       });
+      this.logger.debug("pre-flight verdict cached", {
+        kind: decision.kind,
+        ledger: context.ledger,
+      });
+    }
+
+    // The verdict itself, at the level its severity deserves: a refusal is the
+    // guardrail working and is reported as information, a decision that could
+    // not be reached is a degraded state and is reported as a warning.
+    if (decision.kind === "blocked") {
+      this.logger.info(`guard refused the call (${decision.reason})`, {
+        guard: this.config.guard,
+        contract: call.contract,
+        fn: call.fn,
+        reason: decision.reason,
+      });
+    } else if (decision.kind === "undetermined") {
+      this.logger.warn(`pre-flight could not determine enforcement: ${decision.detail}`, {
+        guard: this.config.guard,
+        contract: call.contract,
+        fn: call.fn,
+      });
+    } else {
+      this.logger.debug("call admitted by the guard", {
+        guard: this.config.guard,
+        contract: call.contract,
+        fn: call.fn,
+        // A string, not the raw bigint: a JSON logger cannot serialise one.
+        estimatedResourceFee: decision.estimatedResourceFee.toString(),
+        footprintKeys: decision.footprintKeys,
+      });
     }
     return decision;
   }
@@ -589,7 +748,7 @@ export class PreFlightInterceptor {
     }
 
     // Resolve policy and initial window spend for staging
-    let policy: PolicyConfig | null = options?.policy ?? this.config.policy ?? null;
+    let policy: ReadonlyPolicyConfig | null = options?.policy ?? this.config.policy ?? null;
     let initialWindowSpent: bigint = options?.initialWindowSpent ?? 0n;
 
     if (policy === null || options?.initialWindowSpent === undefined) {
