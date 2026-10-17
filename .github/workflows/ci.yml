@@ -66,7 +66,7 @@ jobs:
           # Full history, so the evidence gate can diff the PR against its base.
           fetch-depth: 0
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591668 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -164,10 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591668 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -178,11 +175,14 @@ jobs:
       # Informational only, never gating: shared runners are too noisy for a
       # wall-time threshold to mean anything. The committed baseline lives in
       # docs/benchmarks.md; compare changes on a developer machine, not here.
-      # Informational only, never gating: shared runners are too noisy for a
-      # wall-time threshold to mean anything. The committed baseline lives in
-      # docs/benchmarks.md; compare changes on a developer machine, not here.
       # `continue-on-error` keeps a noisy run from reddening the workflow for a
       # number that is never a gate.
       - name: decode-path benchmarks (informational)
         run: npm run bench
         continue-on-error: true
+
+    # Read-only: the bench job only reads the repo and runs benchmarks.
+    permissions:
+      contents: read
+ 
+ 
