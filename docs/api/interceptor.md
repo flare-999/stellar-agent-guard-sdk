@@ -1,6 +1,6 @@
 # PreFlightInterceptor API
 
-`PreFlightInterceptor` evaluates whether a planned contract call will be accepted by the guard contract.
+PreFlightInterceptor evaluates whether a planned contract call will be accepted by the guard contract.
 
 ## Constructor
 
@@ -10,38 +10,41 @@ constructor(options: PreFlightInterceptorOptions)
 
 ### Options
 
-| Option | Type | Default | Semantics |
-| --- | --- | --- | --- |
-| `server` | `rpc.Server` | — (required) | Soroban RPC server instance used to simulate the guard check. |
-| `networkPassphrase` | `string` | — (required) | Stellar network passphrase the simulation is built against. |
-| `guard` | `string` | — (required) | Custom account contract address (`C...`) that enforces policy. |
-| `agent` | `Keypair` | — (required) | Keypair registered as the agent in the guard. |
-| `source` | `Keypair` | — (required) | Keypair paying for transaction fees. |
-| `cache` | `PreFlightCacheOptions` | `undefined` (cache disabled) | Optional short-lived verdict cache. ⚠ Enabling the cache means a verdict may be stale relative to current ledger/policy state; see [Optional cache](#optional-cache). |
-
-### `PreFlightCacheOptions`
+`PreFlightInterceptorOptions` constructor options:
 
 | Option | Type | Default | Semantics |
 | --- | --- | --- | --- |
-| `ttlMs` | `number` | `undefined` | Time-to-live in milliseconds. Set this or `ttlLedgers` to opt in; effective TTL is capped at one approximate five-second ledger-close interval. |
-| `ttlLedgers` | `number` | `undefined` | Time-to-live in ledgers. Set this or `ttlMs` to opt in; a cached entry is discarded when the observed ledger advances. |
-| `policyRevision` | `string \| (() => string \| Promise<string>)` | `undefined` | Policy revision marker; changing it invalidates the matching entry. May be a value or an async getter. |
+| `server`? | `rpc.Server` | required | Soroban RPC server instance used to simulate the guard check. |
+| `networkPassphrase? | `string` | required | Stellar network passphrase for transaction building and signing. |
+| `guard?` | `string` | required | Custom account contract address (`C...`) that implements the guard check. |
+| `agent?` | `Keypair` | required | Keypair registered as the agent in the guard. |
+| `source? | `Keypair` | required | Keypair paying for transaction fees. |
+| `cache?` | `PreFlightCacheOptions` | disabled | Optional short-lived verdict cache. ⚠ Enabling the cache means a verdict may be stale relative to the latest chain state; see below. |
 
-⚠ Safety note: a cached verdict can be staler than one admitted transfer. Callers must accept that tradeoff explicitly and call `invalidate(call?)` after policy or account-state changes.
+All options are required except `cache`. The constructor does not perform any network I/O and does not validate that `guard` exists on-chain; the first call to `check` or `assertAllowed` will surface such errors as an `undetermined` verdict.
 
 ### Optional cache
+
+`PreFlightCacheOptions`:
+
+| Option | Type | Default | Semantics |
+| --- | --- | --- | --- |
+| `ttlMs`? | `number` | unset | Cache entry lifetime in milliseconds. Setting this or `ttlLedgers` opts into caching. |
+| `ttlLedgers?` | `number` | unset | Cache entry lifetime in ledgers. Setting this or `ttlMs` opts into caching. |
+| `policyRevision? | `string | (() => string | Promise<string>)` | unset | Opaque revision label or async getter; changing it invalidates matching entries. |
 
 Set either `cache.ttlMs` or `cache.ttlLedgers` to opt in. The effective TTL is
 capped at one approximate five-second ledger-close interval, and a cached entry
 is discarded when the observed ledger advances. `policyRevision` may be a value
 or an async getter; changing it invalidates the matching entry. Call
-`invalidate(call?)` after policy or account-state changes. A cached verdict can
+`invalidate(call?)` after policy or account-state changes. ⚠ A cached verdict can
 be staler than one admitted transfer, so callers must accept that tradeoff
-explicitly.
+explicitly. Disabling the cache (the default) is the strictest safety posture:
+every check reflects the latest simulated state.
 
 ## Methods
 
-### `check(call: ContractCall): Promise<PreFlightDecision>`
+### `check(call: ContractCall): Promise<PreFlightDecision>
 
 Evaluates a contract call against the guard without throwing or broadcasting.
 
@@ -80,4 +83,4 @@ returns the typed fallback for the call-site contract:
 
 In other words, a malformed or future `CheckResult` never escapes to the agent
 loop as a raw throw. The interceptor treats any decode failure as
-`undetermined`, which is the fail-closed result.
+undetermined`, which is the fail-closed result.

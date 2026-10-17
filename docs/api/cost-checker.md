@@ -13,17 +13,15 @@ constructor(options: CostPreCheckConfig)
 | Option | Type | Default | Semantics |
 | --- | --- | --- | --- |
 | `interceptor` | `Pick<PreFlightInterceptor, "check">` | — (required) | Configured interceptor instance whose simulation prices execution. |
-| `maxFeeStroops` | `bigint` | `undefined` | Maximum allowable total fee in stroops. When omitted, the checker prices the transaction but never objects to it (no fee ceiling is enforced). ⚠ Setting a ceiling is what makes `over_budget` reachable; omitting it means cost is reported but never blocks. |
-| `policySource` | `string \| PolicyConfig \| null` | `null` | Opt-in policy source (contract address or `GuardPolicy`/`PolicyConfig`) enabling additive `policyContext`. When `null`, `policyContext` is `null`. |
-| `policy` | `string \| PolicyConfig \| null` | `null` | Alias for `policySource`. |
+| `maxFeeStroops` | `bigint` | `undefined` | Maximum allowable total fee in stroops. When omitted, the call is priced but never objected to on fee grounds. ⚠ Setting a ceiling is what makes `over_budget` reachable; leaving it unset means fee overruns are reported as `within_budget`. |
+| `policySource` | `string \| PolicyConfig \| null` | `undefined` | Opt-in policy source (contract address or `GuardPolicy`/`PolicyConfig`) enabling additive `policyContext`. When unset, `policyContext` is `null`. |
+| `policy` | `string \| PolicyConfig \| null` | `undefined` | Alias for `policySource`. |
 
-⚠ Safety note: `policyContext` is additive context only — it does not itself change the `CostDecision` verdict. Disabling the policy source (`null`) removes `policyContext` but does not weaken fee-ceiling enforcement, which is governed solely by `maxFeeStroops`.
+⚠ Safety note: `policyContext` is additive context only and never changes the `allowed` verdict. Disabling the policy source (`policySource`/`policy` unset) means no policy context is surfaced — the fee decision itself is unaffected.
 
 ## Methods
 
 ### `check(call: ContractCall, options?: { policySource?: string | PolicyConfig | null; maxFeeStroops?: bigint }): Promise<CostPreCheckResult>`
-
-Per-call `options` override the constructor values for that invocation only (`policySource` and `maxFeeStroops`).
 
 Returns `CostPreCheckResult` (`CostDecision`), a discriminated union:
 - `{ kind: "within_budget", allowed: true, totalFeeStroops, resourceFeeStroops, inclusionFeeStroops, footprintKeys, feeCeilingStroops, policyContext }`
@@ -32,8 +30,6 @@ Returns `CostPreCheckResult` (`CostDecision`), a discriminated union:
 - `{ kind: "undetermined", allowed: false, detail, totalFeeStroops: 0n, resourceFeeStroops: 0n, inclusionFeeStroops: 0n, policyContext }`
 
 ### Policy Context (`policyContext`)
-
-⚠ `policyContext` is advisory and may be stale relative to live contract state; treat `null` fields as "unknown", never as "safe".
 
 When an opt-in policy source is configured, `policyContext` exposes additive policy context derived from the live `check()` call:
 
@@ -45,7 +41,7 @@ policyContext: {
 } | null
 ```
 
-- `perTxCapOk`: Whether the transaction fits the policy's per-transaction limit (`true` if within cap, `false` if per-tx cap exceeded, or `null` if not determinable). ⚠ `null` means "cannot be determined" — do not treat it as within-cap.
+- `perTxCapOk`: Whether the transaction fits the policy's per-transaction limit (`true` if within cap, `false` if per-tx cap exceeded, or `null` if not determinable).
 - `windowRemainingEstimate`: Estimated remaining headroom in the current rolling window. **Always `null` when the contract does not expose sufficient window state.** Note that `null` means "not available / cannot be determined from the current contract state", **not** a zero remaining budget. The SDK never fabricates a zero budget.
 - `reason`: The contract's policy block reason if blocked (e.g. `"window_cap_exceeded"` or `"per_tx_cap_exceeded"`), or `null` when allowed.
 - When no policy source is configured, `policyContext` is `null`.

@@ -175,6 +175,68 @@ Both framework adapters wrap the same `PreFlightInterceptor` but expose differen
 | Mapping error (`toContractCall` returns `null`/malformed) | Halts with a formatted `ToolMessage` describing the mapping failure; the tool handler never runs. | Returns `false`; the action is excluded from candidate execution. |
 
 
+## API Reference
+
+### Constructor Options
+
+Every exported options interface is documented below. Defaults are verified against source; safety-relevant options are flagged with ⚠️.
+
+#### `PreFlightInterceptorOptions`
+
+Options for `new PreFlightInterceptor(options)`.
+
+| Option | Type | Default | Semantics |
+|---|---|---|---|
+| `server` | `rpc.Server` | — (required) | Soroban RPC server used for simulation. |
+| `networkPassphrase` | `string` | — (required) | Network passphrase the transaction is built for. |
+| `guard` | `ContractAddress` | — (required) | Guard contract address (C...). |
+| `agent` | `Keypair` | — (required) | Agent keypair whose authorization is simulated. |
+| `source` | `Keypair` | — (required) | Source account keypair for the simulation transaction. |
+| `cache` | `boolean` | `false` | ⚠️ Enables a short-lived simulation cache. When enabled, a verdict may be **stale** within the current ledger — a policy change or balance shift can make a cached `admissible` verdict wrong. |
+| `cacheTtlMs` | `number` | `5000` | Cache entry lifetime in milliseconds (only used when `cache` is enabled). |
+| `failClosed` | `boolean` | `true` | ⚠️ When `true`, any simulation/RPC error yields an `undetermined` verdict (fails closed). Disabling it lets errors surface as thrown exceptions instead — **not recommended** for safety-critical use. |
+
+#### `CostPreCheckerOptions`
+
+Options for `new CostPreChecker(options)`.
+
+| Option | Type | Default | Semantics |
+|---|---|---|---|
+| `server` | `rpc.Server` | — (required) | Soroban RPC server used for simulation pricing. |
+| `networkPassphrase` | `string` | — (required) | Network passphrase for fee computation. |
+| `maxTotalFee` | `string \| bigint` | `undefined` | Optional ceiling on total fee (stroops). Exceeding it marks the pre-check as over-budget. |
+| `failClosed` | `boolean` | `true` | ⚠️ When `true`, pricing errors are reported as over-budget/undetermined rather than silently passing. Disabling it can let an unpriced transaction proceed. |
+
+#### `GuardTelemetryListenerOptions`
+
+Options for `new GuardTelemetryListener(options)`.
+
+| Option | Type | Default | Semantics |
+|---|---|---|---|
+| `server` | `rpc.Server` | — (required) | Soroban RPC server to tail events from. |
+| `guard` | `ContractAddress` | — (required) | Guard contract address whose events are decoded. |
+| `startLedger` | `number` | latest | Ledger to begin tailing from. |
+| `pollIntervalMs` | `number` | `5000` | Polling interval for new events. |
+| `statsWindow` | `number` | `undefined` | ⚠️ When set, enables opt-in sliding-window counters exposed via `stats()`. Counters are in-memory only and reset on restart. |
+
+#### `InvokeOptions`
+
+Options for `invoke(options)`.
+
+| Option | Type | Default | Semantics |
+|---|---|---|---|
+| `server` | `rpc.Server` | — (required) | Soroban RPC server for the full lifecycle. |
+| `networkPassphrase` | `string` | — (required) | Network passphrase for signing/broadcast. |
+| `contract` | `ContractAddress` | — (required) | Target contract address. |
+| `fn` | `string` | — (required) | Contract function name. |
+| `args` | `xdr.ScVal[]` | `[]` | Function arguments. |
+| `agent` | `Keypair` | — (required) | Agent keypair used for auth signing. |
+| `source` | `Keypair` | — (required) | Source account keypair. |
+| `maxRetries` | `number` | `3` | Bounded retry count for stale-ledger resource limits and minimum-fee rejections. |
+| `fee` | `string` | auto | Optional explicit inclusion fee (stroops). |
+
+> ⚠️ **Cache & fail-closed note:** enabling `cache` trades freshness for fewer RPC calls — a cached verdict may be stale. Disabling `failClosed` trades safety for visibility — errors become exceptions instead of `undetermined`. Both are consistent with the [Trust & limitations](#-what-makes-this-different) disclaimer above.
+
 #### Branded Address Types (v0.2.0+)
 
 This version introduces **branded types** to distinguish contract addresses (C...) from account addresses (G...) at compile time, preventing a common source of bugs where an address is used in the wrong context.
@@ -864,115 +926,6 @@ The combined heartbeat-loop + pre-flight pattern is tracked as an integration gu
 ## API Reference
 
 The complete SDK API reference lives in [`docs/api-reference.md`](docs/api-reference.md) — method signatures, options, return shapes and examples for `PreFlightInterceptor`, `CostPreChecker`, `GuardTelemetryListener`, `validateGuardPolicy`, the framework adapters and the `invoke()` pipeline. The README keeps this stub so the npm landing page stays readable; the reference itself grows alongside the other `docs/` guides.
-#### Constructor options reference
-
-Every exported options interface is documented below with its fields, types, defaults, and one-line semantics. Defaults are cross-checked against source; safety-relevant options carry a ⚠ marker consistent with this README's disclaimer style.
-
-##### `PreFlightInterceptorOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `server` | `rpc.Server` | — (required) | Soroban RPC server used for simulation. |
-| `networkPassphrase` | `string` | — (required) | Network passphrase bound into the transaction being simulated. |
-| `guard` | `ContractAddress` | — (required) | Guard (custom account) contract address. |
-| `agent` | `Keypair \| AgentSigner` | — (required) | Agent key used to sign the authorization entry during simulation. |
-| `source` | `Keypair` | — (required) | Source account for the simulated transaction. |
-| `cache` | `{ ttlMs?: number; ttlLedgers?: number; policyRevision?: () => string \| number }` | omitted (cache disabled) | ⚠ Opt-in short-lived verdict cache. When enabled, a cached `admissible` verdict may be staler than one admitted transfer — see [Optional simulation-result cache](#optional-simulation-result-cache). |
-| `clock` | `Clock` | system clock | Optional time source for deterministic tests (cache TTL). |
-| `logger` | `GuardLogger` | `SILENT_LOGGER` | Optional structured log sink; a level that throws is isolated. |
-
-##### `CostPreCheckerOptions` (`CostPreCheckConfig`)
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `interceptor` | `PreFlightInterceptor` | — (required) | Interceptor whose enforced simulation supplies the verdict and the priced simulation. |
-| `maxFeeStroops` | `bigint` | omitted (no ceiling) | ⚠ Pre-flight fee ceiling in stroops. A pre-flight ceiling, not a network guarantee — a fee-bump or base-fee change can still move the real price. |
-| `policySource` | `ContractAddress \| GuardPolicy \| PolicyConfig` | omitted (`policyContext: null`) | Opt-in policy source; when set, results carry additive `policyContext`. |
-| `logger` | `GuardLogger` | `SILENT_LOGGER` | Optional structured log sink. |
-
-##### `GuardTelemetryListenerOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `server` | `rpc.Server` | — (required) | Soroban RPC server used to tail events. |
-| `guard` | `ContractAddress` | — (required) | Guard contract whose events are decoded. |
-| `buffer` | `{ max: number }` | omitted (no buffer allocated) | ⚠ Opt-in bounded in-memory window backing `recent()`. Non-durable: a restart empties it. |
-| `includeRaw` | `boolean` | `false` | ⚠ Opt-in retention of the undecoded source event on each `GuardEvent` (`raw`). Leave off in long-running fleets. |
-| `logger` | `GuardLogger` | `SILENT_LOGGER` | Optional structured log sink. |
-
-##### `InvokeOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `server` | `rpc.Server` | — (required) | Soroban RPC server used for probe, simulate, and broadcast. |
-| `source` | `Keypair` | — (required) | Source account for the transaction. |
-| `call` | `ContractCall` | — (required) | The contract call to execute. |
-| `networkPassphrase` | `string` | — (required) | Network passphrase bound into the transaction. |
-| `guardAuth` | `{ guard: ContractAddress; agent: Keypair \| AgentSigner }` | — (required) | Guard address and agent signer used to build the authorization entry. |
-| `dryRun` | `boolean` | `false` | ⚠ When `true`, stops before assembly/broadcast and returns the structured `kind: "dry_run"` trace — never calls `sendTransaction`. |
-| `onStep` | `(step: InvokeStepEvent) => void` | omitted | Optional observability hook; callback exceptions are isolated and never affect the pipeline. |
-| `signal` | `AbortSignal` | omitted | Caller-owned cancellation; an already-aborted signal returns before any RPC call. |
-| `timeoutMs` | `number` | `DEFAULT_RPC_TIMEOUT_MS` (30s) | Per-RPC-call budget; `0` opts out and relies on `signal` alone. A fired bound surfaces as `RpcTimeoutError` in the `error` outcome. |
-| `logger` | `GuardLogger` | `SILENT_LOGGER` | Optional structured log sink. |
-
-##### `PreFlightCheckOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `signal` | `AbortSignal` | omitted | Caller-owned cancellation; an already-aborted signal returns before any RPC call. |
-| `timeoutMs` | `number` | `DEFAULT_RPC_TIMEOUT_MS` (30s) | Per-RPC-call budget; a fired bound returns the fail-closed `undetermined` verdict carrying `RpcTimeoutError`. |
-
-##### `CostPreCheckOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `signal` | `AbortSignal` | omitted | Caller-owned cancellation; an already-aborted signal returns before any RPC call. |
-| `timeoutMs` | `number` | `DEFAULT_RPC_TIMEOUT_MS` (30s) | Per-RPC-call budget; a fired bound returns the fail-closed `undetermined` verdict carrying `RpcTimeoutError`. |
-
-##### `GuardTelemetryWatchParams`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `startLedger` | `number` | resolved from `getLatestLedger` | First ledger to tail from. An already-aborted `signal` skips even this probe. |
-| `pollIntervalMs` | `number` | — (required) | Base poll interval between `getEvents` calls. |
-| `jitter` | `'full' \| 'none'` | `'full'` | ⚠ `'full'` uniformly randomizes each delay in `[intervalMs * (1 - j), intervalMs]` with `j = 0.2` to break fleet lockstep; `'none'` restores fixed cadence. |
-| `signal` | `AbortSignal` | omitted | Aborts at loop boundaries; an in-flight request cannot be cancelled — see [Aborting a watch](#aborting-a-watch-what-cancellation-does-and-does-not-cover). |
-
-##### `ValidatePolicyOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `guardAddress` | `ContractAddress` | omitted | Optional guard address used for address-context validation rules. |
-
-##### Framework adapter options
-
-`createLangChainGuardMiddleware`, `createGuardValidator`, `guardMcpToolHandler`, `guardMcpCallTool`, and `createVercelAIGuard` share a common option shape, validated synchronously at construction (see [Adapter options validation](#adapter-options-validation-fail-fast-at-construction)):
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `interceptor` | `PreFlightInterceptor` | — (required) | Interceptor whose `check` produces the verdict. |
-| `toContractCall` | `(input) => ContractCall \| null` | — (required) | Maps the adapter's input to a `ContractCall`; a `null`/malformed mapping halts (fails closed). |
-| `onBlocked` | `(info: { adapter; kind; reason; call; explanation }) => void` | omitted | ⚠ Fires once per halt; callback errors are logged and swallowed so a broken sink cannot turn a refusal into an executed action. |
-| `onStep` | `(step: InvokeStepEvent) => void` | omitted | Optional enforcement-stage observability hook (probe → sign → simulate; never broadcast). |
-| `logger` | `GuardLogger` | `SILENT_LOGGER` | Optional structured log sink. |
-
-##### `StartHeartbeatOptions`
-
-| Option | Type | Default | Semantics |
-|---|---|---|---|
-| `server` | `rpc.Server` | — (required) | Soroban RPC server used to submit beats. |
-| `guard` | `ContractAddress` | — (required) | Guard contract to heartbeat. |
-| `signer` | `Keypair \| AgentSigner` | — (required) | Agent signer for the heartbeat authorization. |
-| `intervalMs` | `number` | — (required) | Fixed cadence between beats; validated `<= grace/3` before the first beat when the grace window is readable. |
-| `maxSkewMs` | `number` | — (required) | ⚠ Tolerated drift before a beat counts as missed (`hb.missedBeats`, `onBeat`'s `lateMs`). |
-| `onBeat` | `(info: { lateMs }) => void` | omitted | Called after each successful beat. |
-| `onError` | `(error: unknown) => void` | omitted | Every submission rejection is routed here; nothing escapes as an unhandled rejection. |
-| `onWarning` | `(message: string) => void` | omitted | Called when the grace window is unreadable and the interval cannot be validated. |
-| `graceSecs` | `number` | omitted (read from policy) | Optional pre-read of the grace window for interval validation. |
-| `signal` | `AbortSignal` | omitted | Tears down the loop cleanly; no beat is sent after it. |
-
-> ⚠ **Safety-relevant defaults, summarized:** caching is off unless `cache` is supplied (a cached verdict may be stale); `dryRun` is off by default (a live `invoke()` broadcasts); `includeRaw` is off by default (nothing is retained); `maxFeeStroops` is unset by default (no pre-flight ceiling); and `timeoutMs` defaults to 30s so a stalled RPC fails closed rather than hanging.
-
 
 Prefer this over calling `interceptor.check(call)` and `costChecker.check(call)`
 in sequence. That two-call pattern still works and its types are unchanged, but

@@ -1,8 +1,9 @@
 # Invoke Pipeline API
 
-## ``invoke(params: InvokeParams): Promise<InvokeOutcome>``
+## ``invoke(params: InvokeParams): Promise<InvokeOutcome>`
 
 Executes an end-to-end transaction through the guard:
+
 1. Runs probe simulation to collect required authorization entries.
 2. Signs authorization entries with the agent signer (`GuardAuthorization.agent`:
    an `AgentSigner`, or a plain Ed25519 `Keypair` for the single-key default).
@@ -39,26 +40,24 @@ const outcome = await invoke({
 
 ### `InvokeOptions` constructor / options table
 
-The following table documents every field of the `InvokeOptions` interface (and the nested `feeBump` configuration). Defaults are cross-checked against the source and the `.d.ts` declarations.
+The following options are accepted by the invoke pipeline. Defaults are verified against the source (`src/invoke/types.ts`) and the compiled `.d.ts` declarations.
 
 | Option | Type | Default | Semantics |
 | ------ | ---- | ------- | ---------- |
-| `server` | `SorobanRpc`Server` | — (required) | Soroban RPC client used for simulation and submission. |
-| `source` | `Account` | — (required) | Source account for the transaction. |
-| `call` | `ContractCall` | — (required) | Contract function and arguments to invoke. |
-| `networkPassphrase` | `string` | — (required) | Network passphrase for transaction building and signing. |
-| `feeBump` | `FeeBumpOptions` | `{ maxAttempts: 3, feeMultiplier: 2, initialInclusionFee: 100n }` | Bounded fee-increase retry configuration. See `Fee-Bump Configuration`. |
-| `maxRetries` | `number` | `undefined` (no overall cap beyond `feeBump.maxAttempts`) | Overall retry cap for transient ledger resource errors and fee-bump retries. |
+| `server` | `SorobanRpcServer` | required | Soroban RPC client used for probe simulation, enforced simulation, and broadcast. |
+| `source` | `Keypair` | required | Source account keypair used to build the transaction envelope. |
+| `call` | `ContractCall` | required | Contract address, function name, and arguments to invoke. |
+| `networkPassphrase` | string | required | Stellar network passphrase (e.g. `Test Stellar Network`). |
+| `feeBump` | `FeeBumpOptions` | `{ maxAttempts: 3, feeMultiplier: 2, initialInclusionFee: 100n }` | Bounded fee-bump retry policy; see below. |
+| `maxRetries` | number | `3` | Overall retry budget for transient ledger resource errors and fee-bump attempts. |
+| `timeoutMs` | number | `30000` | Per-RPC-call timeout in milliseconds. |
 
-Notes:
-- Defaults in this table are verified against the implementation and `.d.ts` declarations. If a default changes in code, update this table in the same PR.
-- Safety-relevant options are flagged with ⚠ markers consistent with the README disclaimer style.
-- The fee-bump path is designed to preserve the guard invariant: every attempt is re-prepared, re-simulated, and re-evaluated before broadcast.
+`FeeBumpOptions`:
 
-### FeeBumpOptions table
+| Field | Type | Default | Semantics |
+| ----- | ---- | ------- | ---------- |
+| `maxAttempts` | number | `3` | Maximum fee-bump attempts before returning `BroadcastError. |
+| `feeMultiplier` | number | `2` | Multiplier applied to the inclusion fee on each retry. |
+| `initialInclusionFee` | bigint | `100n` | Base inclusion fee in stroops for the first attempt. }
 
-| Option | Type | Default | Semantics |
-| ------ | ---- | ------- | ---------- |
-| `maxAttempts` | `number` | `3` | Maximum fee-bump attempts before returning `BroadcastError`. |
-| `feeMultiplier` | `number` | `2` | Multiplier applied to the inclusion fee on each retry. |
-| `initialInclusionFee` | `bigint` | `100n` | Base inclusion fee in stroops for the first attempt. |
+> ✠️ **Safety note:** Fee-bump retries never bypass simulation or guard enforcement. Every attempt is re-prepared, re-simulated, and re-evaluated by the policy. Disabling fee-bump (`feeBump.maxAttempts = 0`) is safe from a policy perspective — it only removes the retry on minimum-fee rejections, causing the call to surface a `BroadcastError` instead.
