@@ -1,0 +1,63 @@
+# Dependabot keeps the npm surface fresh and the Actions pins current
+# (issue #124). Mirrors stellar-agent-guard-contracts/.github/dependabot.yml:
+# weekly cadence, PRs capped so the security-sensitive review queue stays
+# triageable. Every PR must still pass the full `ci` gate (branch protection
+# on `main` enforces this) — see CONTRIBUTING.md.
+# Actions are SHA-pinned with trailing `# vX.Y.Z` comments (issue #106);
+# Dependabot rewrites the SHA and the comment together on bump PRs.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    target-branch: "main"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # @stellar/stellar-sdk is isolated on purpose: it is the SDK's only
+      # runtime dependency and owns the XDR encoding and Soroban auth-entry
+      # surface the guard's pre-flight and signing paths are built on. A bump
+      # (above all a major) can change XDR types or auth semantics, so it must
+      # land alone for a focused human review — and, if it touches the
+      # enforcement path, fresh live-testnet evidence (CONTRIBUTING.md). Do NOT
+      # fold it into the grouped minor/patch set below.
+      stellar-sdk:
+        patterns:
+          - "@stellar/stellar-sdk"
+      # Everything else, minor + patch only, grouped to keep PR noise low.
+      # Majors of these are left ungrouped, so each arrives as its own PR.
+      npm-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@stellar/stellar-sdk"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    target-branch: "main"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # Workflows pin by SHA with trailing `# vX.Y.Z` comments (issue #106).
+      # Dependabot updates the SHA and the trailing version comment together,
+      # so the pin stays current without losing the human-readable version.
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
